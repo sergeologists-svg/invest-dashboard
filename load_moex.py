@@ -1,6 +1,6 @@
 """
 load_moex.py
-Ежедневная загрузка дневных свечей акций с Московской биржи (MOEX) в облачную БД Supabase.
+Ежедневная загрузка дневных свечей ВСЕХ акций с MOEX + справочник названий.
 """
 import apimoex
 import requests
@@ -9,43 +9,45 @@ from sqlalchemy import create_engine
 from datetime import datetime
 import urllib3
 
-# ===== ВСТАВЬ СВОЙ URI ИЗ SUPABASE (Direct connection) =====
+# ===== ТВОЙ URI ИЗ SUPABASE (Direct connection) =====
 DATABASE_URL = "postgresql://postgres.lxqmkvbtazjfqzkoumuk:17Vfylfdjitr@aws-1-eu-west-1.pooler.supabase.com:5432/postgres"
-# ===========================================================
+# ===================================================
 
 engine = create_engine(DATABASE_URL)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def load_shares():
-    """Загружает дневные свечи для списка акций с MOEX в staging.stocks."""
+    """Загружает дневные свечи для ВСЕХ акций с MOEX в staging.stocks."""
     session = requests.Session()
     session.verify = False
-    print(f"Начинаем загрузку {datetime.now()}")
+    print(f"Начинаем загрузку акций {datetime.now()}")
 
     try:
-        # 1. Получаем все бумаги на рынке акций (board='TQBR')
+        # 1. Получаем список всех бумаг на рынке акций
         securities = apimoex.get_board_securities(session, board='TQBR')
         df_sec = pd.DataFrame(securities)
 
-        # Показываем, какие столбцы пришли (для диагностики, можно потом убрать)
-        print("Доступные столбцы:", df_sec.columns.tolist())
+        # 2. Берём все строки с непустым SECID
+        shares = df_sec[df_sec['SECID'].notna()][['SECID', 'SHORTNAME']]
+        print(f"Найдено акций: {len(shares)}")
 
-        # 2. Отбираем только акции: теперь не привязываемся к BOARDID
-        #    Если столбца BOARDID нет, берём все строки, где есть SECID.
-        if 'BOARDID' in df_sec.columns:
-            shares = df_sec[df_sec['BOARDID'] == 'TQBR'][['SECID', 'SHORTNAME']]
-        else:
-            # Просто берём все записи с непустым SECID (это и будут акции)
-            shares = df_sec[df_sec['SECID'].notna()][['SECID', 'SHORTNAME']]
+        # 3. Сохраняем справочник названий (если ещё не сохраняли)
+        info = shares[['SECID', 'SHORTNAME']].copy()
+        info['type'] = 'stock'
+        # Чтобы не дублировать записи, удаляем существующие
+        existing_ids = pd.read_sql("SELECT secid FROM staging.securities_info", engine)
+        info = info[~info['SECID'].isin(existing_ids['secid'])]
+        if not info.empty:
+            info.to_sql('securities_info', engine, schema='staging',
+                        if_exists='append', index=False, method='multi')
+            print(f"Добавлено {len(info)} новых названий в справочник")
 
-        print(f"Найдено бумаг: {len(shares)}")
+        # 4. Загружаем свечи для всех тикеров
+        all_tickers = shares['SECID'].tolist()
+        print(f"Загружаем свечи для {len(all_tickers)} тикеров...")
 
-        # Для теста берём первые 10 тикеров (можешь увеличить)
-        top_tickers = shares['SECID'].head(10).tolist()
-        print(f"Загружаем {len(top_tickers)} тикеров: {', '.join(top_tickers)}")
-
-        for ticker in top_tickers:
+        for ticker in all_tickers:
             try:
                 candles = apimoex.get_board_candles(
                     session,
@@ -56,7 +58,6 @@ def load_shares():
                     end=None
                 )
                 if not candles:
-                    print(f"  {ticker}: нет данных")
                     continue
 
                 df = pd.DataFrame(candles)
@@ -79,15 +80,11 @@ def load_shares():
                 existing_dates = set(existing['tradedate'])
                 new_df = df[~df['tradedate'].isin(existing_dates)]
 
-                if new_df.empty:
-                    print(f"  {ticker}: новых данных нет")
-                    continue
-
-                new_df.to_sql(
-                    'stocks', engine, schema='staging',
-                    if_exists='append', index=False, method='multi'
-                )
-                print(f"  {ticker}: загружено {len(new_df)} строк")
+                if not new_df.empty:
+                    new_df.to_sql(
+                        'stocks', engine, schema='staging',
+                        if_exists='append', index=False, method='multi'
+                    )
             except Exception as e:
                 print(f"  Ошибка для {ticker}: {e}")
                 continue
@@ -95,7 +92,7 @@ def load_shares():
     except Exception as e:
         print(f"Ошибка при получении списка акций: {e}")
 
-    print(f"Загрузка завершена {datetime.now()}")
+    print(f"Загрузка акций завершена {datetime.now()}")
 
 
 if __name__ == "__main__":
