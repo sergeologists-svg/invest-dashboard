@@ -1,0 +1,29 @@
+name: Daily MOEX data update
+
+on:
+  schedule:
+    - cron: '0 5 * * *'  # 8:00 МСК каждый день (5:00 UTC)
+  workflow_dispatch:      # возможность запустить вручную из браузера
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install apimoex requests
+
+      - name: Run ETL script
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python load_moex.py
