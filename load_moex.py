@@ -1,12 +1,12 @@
 """
 load_moex.py
-Ежедневная загрузка дневных свечей ВСЕХ акций с MOEX + справочник названий.
+Ежедневная загрузка дневных свечей ВСЕХ акций с MOEX (последние 14 дней) + справочник названий.
 """
 import apimoex
 import requests
 import pandas as pd
 from sqlalchemy import create_engine
-from datetime import datetime
+from datetime import datetime, timedelta
 import urllib3
 
 # ===== ТВОЙ URI ИЗ SUPABASE (Direct connection) =====
@@ -18,34 +18,35 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def load_shares():
-    """Загружает дневные свечи для ВСЕХ акций с MOEX в staging.stocks."""
+    """Загружает дневные свечи для всех акций с MOEX."""
     session = requests.Session()
     session.verify = False
     print(f"Начинаем загрузку акций {datetime.now()}")
 
     try:
-        # 1. Получаем список всех бумаг на рынке акций
+        # 1. Список всех бумаг на рынке акций
         securities = apimoex.get_board_securities(session, board='TQBR')
         df_sec = pd.DataFrame(securities)
 
-        # 2. Берём все строки с непустым SECID
+        # Берём все строки с непустым SECID
         shares = df_sec[df_sec['SECID'].notna()][['SECID', 'SHORTNAME']]
         print(f"Найдено акций: {len(shares)}")
 
-        # 3. Сохраняем справочник названий (если ещё не сохраняли)
+        # 2. Сохраняем справочник названий
         info = shares[['SECID', 'SHORTNAME']].copy()
+        info.columns = ['secid', 'shortname']
         info['type'] = 'stock'
-        # Чтобы не дублировать записи, удаляем существующие
         existing_ids = pd.read_sql("SELECT secid FROM staging.securities_info", engine)
-        info = info[~info['SECID'].isin(existing_ids['secid'])]
+        info = info[~info['secid'].isin(existing_ids['secid'])]
         if not info.empty:
             info.to_sql('securities_info', engine, schema='staging',
                         if_exists='append', index=False, method='multi')
             print(f"Добавлено {len(info)} новых названий в справочник")
 
-        # 4. Загружаем свечи для всех тикеров
+        # 3. Загружаем свечи за последние 14 дней
+        start_date = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
         all_tickers = shares['SECID'].tolist()
-        print(f"Загружаем свечи для {len(all_tickers)} тикеров...")
+        print(f"Загружаем свечи с {start_date} для {len(all_tickers)} тикеров...")
 
         for ticker in all_tickers:
             try:
@@ -54,7 +55,7 @@ def load_shares():
                     security=ticker,
                     board='TQBR',
                     interval=24,
-                    start='2026-07-01',
+                    start=start_date,
                     end=None
                 )
                 if not candles:
@@ -85,6 +86,7 @@ def load_shares():
                         'stocks', engine, schema='staging',
                         if_exists='append', index=False, method='multi'
                     )
+                    print(f"  {ticker}: загружено {len(new_df)} строк")
             except Exception as e:
                 print(f"  Ошибка для {ticker}: {e}")
                 continue
