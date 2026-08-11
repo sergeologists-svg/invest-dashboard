@@ -8,12 +8,37 @@ import plotly.express as px
 import plotly.graph_objects as go
 from sqlalchemy import create_engine
 from datetime import datetime, timedelta
+import subprocess
+import sys
 
 DATABASE_URL = "postgresql://postgres.lxqmkvbtazjfqzkoumuk:17Vfylfdjitr@aws-1-eu-west-1.pooler.supabase.com:5432/postgres"
 engine = create_engine(DATABASE_URL)
 
 st.set_page_config(page_title="Инвестиционный дашборд", layout="wide")
 st.title("📈 Инвестиционный монитор (MOEX)")
+
+# Блок с информацией о последнем обновлении и кнопкой
+col_info, col_btn = st.columns([3, 1])
+with col_info:
+    try:
+        last_stock_date = pd.read_sql("SELECT MAX(tradedate) as max_date FROM staging.stocks", engine).iloc[0]['max_date']
+        last_bond_date = pd.read_sql("SELECT MAX(tradedate) as max_date FROM staging.bonds", engine).iloc[0]['max_date']
+        latest_date = max(last_stock_date, last_bond_date) if last_stock_date and last_bond_date else None
+        if latest_date:
+            st.markdown(f"🕒 **Данные актуальны на:** {latest_date.strftime('%d.%m.%Y')}")
+        else:
+            st.markdown("🕒 **Данные ещё не загружены**")
+    except:
+        st.markdown("🕒 **Ошибка получения даты обновления**")
+with col_btn:
+    if st.button("🔄 Обновить все данные"):
+        with st.spinner("Загружаем свежие данные с MOEX... Это может занять пару минут."):
+            try:
+                subprocess.run([sys.executable, "load_moex.py"], check=True)
+                subprocess.run([sys.executable, "load_bonds.py"], check=True)
+                st.success("Данные обновлены! Обновите страницу.")
+            except Exception as e:
+                st.error(f"Ошибка при обновлении: {e}")
 
 @st.cache_data(ttl=3600)
 def load_data():
@@ -78,7 +103,7 @@ with tab1:
         st.subheader("Все акции")
         styled_df = merged[['secid', 'shortname', 'close_today', 'change_pct', 'volume_today']].rename(
             columns={'close_today':'Цена', 'change_pct':'Изм.%', 'volume_today':'Объём'}
-        ).style.applymap(color_negative_red, subset=['Изм.%'])
+        ).style.map(color_negative_red, subset=['Изм.%'])
         st.dataframe(styled_df, hide_index=True)
 
 # ---------- ОБЛИГАЦИИ ----------
